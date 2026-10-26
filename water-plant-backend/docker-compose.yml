@@ -1,0 +1,56 @@
+# Development stack: PostgreSQL 17 + Redis, plus API, worker and a single scheduler.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: water_plant
+      POSTGRES_USER: water
+      POSTGRES_PASSWORD: water
+    ports: ["127.0.0.1:5432:5432"]   # never expose the database publicly
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U water -d water_plant"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports: ["127.0.0.1:6379:6379"]
+
+  api:
+    build: ./services/api
+    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      DATABASE_URL: postgresql://water:water@postgres:5432/water_plant
+      CELERY_BROKER_URL: redis://redis:6379/0
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["./services/api:/app"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+
+  worker:
+    build: ./services/api
+    command: celery -A config worker -Q notifications,documents,maintenance -l info
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      DATABASE_URL: postgresql://water:water@postgres:5432/water_plant
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes: ["./services/api:/app"]
+    depends_on: [api]
+
+  scheduler:   # exactly ONE beat instance; jobs are duplicate-safe anyway
+    build: ./services/api
+    command: celery -A config beat -l info
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      DATABASE_URL: postgresql://water:water@postgres:5432/water_plant
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on: [api]
+
+volumes:
+  pgdata:
